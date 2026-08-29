@@ -6,12 +6,7 @@ import {
   ArrowRight, RefreshCw, Users, BedDouble
 } from "lucide-react";
 
-/* ---------------------------------------------------------------
-   ATLAS — Adaptive Triage & Logistics Allocation System
-   Design language: night-operations command center. Every surface
-   reads as instrumentation, not decoration — the interface itself
-   is a set of vital signs for the response effort.
-----------------------------------------------------------------*/
+
 
 const palette = {
   base: "#0A0D12",
