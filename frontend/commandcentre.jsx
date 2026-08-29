@@ -3,9 +3,15 @@ import {
   LayoutGrid, HeartPulse, Truck, MapPinned, Building2, Route as RouteIcon,
   Radio, ChevronLeft, Clock, Navigation2, AlertTriangle, Wifi, WifiOff,
   X, ChevronRight, Zap, Activity, ShieldAlert, CircleDot, Signal,
-  ArrowRight, RefreshCw, Users, BedDouble, MapPin
+  ArrowRight, RefreshCw, Users, BedDouble
 } from "lucide-react";
 
+/* ---------------------------------------------------------------
+   ATLAS — Adaptive Triage & Logistics Allocation System
+   Design language: night-operations command center. Every surface
+   reads as instrumentation, not decoration — the interface itself
+   is a set of vital signs for the response effort.
+----------------------------------------------------------------*/
 
 const palette = {
   base: "#0A0D12",
@@ -132,6 +138,7 @@ function Vitals({ hr, color, height = 34, id }) {
   );
 }
 
+/* --------------------------- primitives ------------------------ */
 
 function Panel({ children, style, ...rest }) {
   return (
@@ -261,6 +268,7 @@ function RadialGauge({ pct, size = 64, tone }) {
 
 const NAV = [
   { id: "overview", label: "Overview", icon: LayoutGrid },
+  { id: "map", label: "Live map", icon: Navigation2 },
   { id: "victims", label: "Victims", icon: HeartPulse },
   { id: "teams", label: "Rescue teams", icon: Truck },
   { id: "zones", label: "Zones", icon: MapPinned },
@@ -679,6 +687,268 @@ function RouteFlow({ stops, blocked }) {
   );
 }
 
+/* --------------------------- live map ------------------------ */
+
+const ROAD_V = [80, 160, 240, 320, 400, 480, 560];
+const ROAD_H = [60, 140, 220, 300, 380];
+const MAIN_V = 320;
+const MAIN_H = 220;
+
+const MAP_POS = {
+  BASE: { x: 320, y: 220 },
+  H1: { x: 160, y: 140 },
+  H2: { x: 480, y: 140 },
+  H3: { x: 160, y: 300 },
+  V01: { x: 560, y: 60 },
+  V07: { x: 80, y: 60 },
+  V12: { x: 240, y: 300 },
+  V18: { x: 560, y: 140 },
+  V22: { x: 480, y: 380 },
+  V27: { x: 80, y: 140 },
+  V31: { x: 400, y: 60 },
+  V35: { x: 160, y: 380 },
+};
+
+const ZONE_BOXES = [
+  { id: "A", x: 20, y: 20, w: 280, h: 175 },
+  { id: "B", x: 340, y: 20, w: 280, h: 175 },
+  { id: "C", x: 20, y: 225, w: 280, h: 175 },
+  { id: "D", x: 340, y: 225, w: 280, h: 175 },
+];
+
+const TEAM_ROUTE_IDS = {
+  R1: ["BASE", "V18", "H1"],
+  R2: ["BASE", "V35", "H3"],
+  R3: ["BASE", "V27", "H1"],
+  R4: ["BASE", "V01", "V31", "H2"],
+};
+
+const TEAM_COLOR = {
+  R1: palette.accent,
+  R2: palette.stable,
+  R3: "#B98CFF",
+  R4: palette.warning,
+};
+
+function roadCorner(p1, p2, r) {
+  if (p1.x === p2.x || p1.y === p2.y) return `L ${p2.x},${p2.y} `;
+  const corner = { x: p2.x, y: p1.y };
+  const sx = Math.sign(corner.x - p1.x) || 1;
+  const sy = Math.sign(p2.y - corner.y) || 1;
+  const rr = Math.min(r, Math.abs(corner.x - p1.x), Math.abs(p2.y - corner.y));
+  const a = { x: corner.x - sx * rr, y: p1.y };
+  const b = { x: corner.x, y: corner.y + sy * rr };
+  return `L ${a.x},${a.y} Q ${corner.x},${corner.y} ${b.x},${b.y} L ${p2.x},${p2.y} `;
+}
+
+function pathFor(teamId) {
+  const pts = TEAM_ROUTE_IDS[teamId].map((id) => MAP_POS[id]);
+  let d = `M ${pts[0].x},${pts[0].y} `;
+  for (let i = 0; i < pts.length - 1; i++) d += roadCorner(pts[i], pts[i + 1], 16);
+  return d.trim();
+}
+
+function LocPin({ x, y, color, scale = 0.85, label }) {
+  const h = 43 * scale;
+  return (
+    <g transform={`translate(${x},${y})`}>
+      <path
+        d="M0,0 C-2,-5 -13,-19 -13,-29 C-13,-37.6 -7.2,-43 0,-43 C7.2,-43 13,-37.6 13,-29 C13,-19 2,-5 0,0 Z"
+        transform={`scale(${scale})`}
+        fill={color}
+        stroke={palette.base}
+        strokeWidth={1.4 / scale}
+      />
+      <circle cx="0" cy={-29 * scale} r={7 * scale} fill={palette.base} />
+      <circle cx="0" cy={-29 * scale} r={3.2 * scale} fill={color} />
+      {label && (
+        <text x="0" y={-h - 6} textAnchor="middle" fontFamily={F.mono} fontSize="10" fill={palette.textMute}>
+          {label}
+        </text>
+      )}
+    </g>
+  );
+}
+
+function LiveMap({ victims, focusTeam = null, compact = false, onOpenVictim, onOpenTeam }) {
+  const [selected, setSelected] = useState(focusTeam);
+  const height = compact ? 280 : 440;
+  const teamIds = Object.keys(TEAM_ROUTE_IDS);
+
+  return (
+    <div>
+      {!compact && (
+        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {["ALL", ...teamIds].map((id) => {
+            const isActive = (id === "ALL" && !selected) || selected === id;
+            return (
+              <button
+                key={id}
+                onClick={() => setSelected(id === "ALL" ? null : id)}
+                style={{
+                  padding: "6px 12px",
+                  borderRadius: 999,
+                  border: `1px solid ${isActive ? (TEAM_COLOR[id] || palette.accent) : palette.border}`,
+                  background: isActive ? `${(TEAM_COLOR[id] || palette.accent)}22` : palette.raised2,
+                  color: isActive ? (TEAM_COLOR[id] || palette.accent) : palette.textMute,
+                  fontFamily: F.mono,
+                  fontWeight: 600,
+                  fontSize: 12,
+                  cursor: "pointer",
+                }}
+              >
+                {id === "ALL" ? "All teams" : `Team ${id}`}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      <Panel style={{ padding: 12, overflow: "hidden" }}>
+        <svg viewBox="0 0 640 440" width="100%" height={height} style={{ display: "block" }}>
+          <defs>
+            <pattern id="lm-dots" width="20" height="20" patternUnits="userSpaceOnUse">
+              <circle cx="1" cy="1" r="1" fill={palette.borderSoft} />
+            </pattern>
+          </defs>
+
+          <rect x="0" y="0" width="640" height="420" fill={palette.raised} />
+          <rect x="0" y="0" width="640" height="420" fill="url(#lm-dots)" />
+
+          {/* terrain: park + waterway */}
+          <path d="M470,320 C520,300 580,315 590,355 C600,392 545,405 500,392 C462,381 440,338 470,320 Z" fill="#1C3324" opacity="0.55" />
+          <path d="M-10,420 C60,395 110,415 170,398 C230,381 260,410 320,400 L320,440 L-10,440 Z" fill="#12293A" opacity="0.5" />
+
+          {/* zone tint + labels */}
+          {ZONE_BOXES.map((z) => (
+            <g key={z.id}>
+              <rect x={z.x} y={z.y} width={z.w} height={z.h} fill={palette.raised2} opacity="0.28" rx="6" />
+              <rect x={z.x + 8} y={z.y + 8} width="58" height="20" rx="4" fill={palette.base} opacity="0.7" />
+              <text x={z.x + 37} y={z.y + 22} textAnchor="middle" fontFamily={F.display} fontWeight="700" fontSize="11.5" letterSpacing="0.06em" fill={palette.textMute}>
+                ZONE {z.id}
+              </text>
+            </g>
+          ))}
+
+          {/* road grid */}
+          {ROAD_V.map((x) => (
+            <line key={"v" + x} x1={x} y1={20} x2={x} y2={400} stroke={x === MAIN_V ? palette.textDim : palette.borderSoft} strokeWidth={x === MAIN_V ? 2.2 : 1} opacity={x === MAIN_V ? 0.7 : 0.55} />
+          ))}
+          {ROAD_H.map((y) => (
+            <line key={"h" + y} x1={20} y1={y} x2={620} y2={y} stroke={y === MAIN_H ? palette.textDim : palette.borderSoft} strokeWidth={y === MAIN_H ? 2.2 : 1} opacity={y === MAIN_H ? 0.7 : 0.55} />
+          ))}
+          <text x={MAIN_V + 8} y={32} fontFamily={F.mono} fontSize="9.5" fill={palette.textDim} opacity="0.8">MERIDIAN AVE</text>
+          <text x={470} y={MAIN_H - 6} fontFamily={F.mono} fontSize="9.5" fill={palette.textDim} opacity="0.8">ROAD R17</text>
+
+          {/* compass + scale */}
+          <g transform="translate(600,40)" opacity="0.85">
+            <line x1="0" y1="10" x2="0" y2="-14" stroke={palette.textMute} strokeWidth="1.4" />
+            <path d="M0,-14 L-4,-6 L4,-6 Z" fill={palette.textMute} />
+            <text x="0" y="24" textAnchor="middle" fontFamily={F.mono} fontSize="10" fill={palette.textMute}>N</text>
+          </g>
+          <g transform="translate(30,400)">
+            <line x1="0" y1="0" x2="60" y2="0" stroke={palette.textMute} strokeWidth="1.2" />
+            <line x1="0" y1="-4" x2="0" y2="4" stroke={palette.textMute} strokeWidth="1.2" />
+            <line x1="60" y1="-4" x2="60" y2="4" stroke={palette.textMute} strokeWidth="1.2" />
+            <text x="30" y="16" textAnchor="middle" fontFamily={F.mono} fontSize="9.5" fill={palette.textMute}>500 m</text>
+          </g>
+
+          {/* team routes */}
+          {teamIds.map((id) => {
+            const dim = selected && selected !== id;
+            return (
+              <path
+                key={id}
+                d={pathFor(id)}
+                fill="none"
+                stroke={TEAM_COLOR[id]}
+                strokeWidth={dim ? 1.6 : 3.2}
+                strokeOpacity={dim ? 0.18 : 0.9}
+                strokeLinecap="round"
+                style={{ transition: "stroke-opacity 0.25s, stroke-width 0.25s" }}
+              />
+            );
+          })}
+
+          {teamIds.map((id) => {
+            const dim = selected && selected !== id;
+            if (dim) return null;
+            const dur = Math.max(4, teamsData[id].etaBase * 1.4);
+            return (
+              <circle key={id + "-mover"} r="6" fill={TEAM_COLOR[id]} stroke={palette.base} strokeWidth="1.5">
+                <animateMotion dur={`${dur}s`} repeatCount="indefinite" path={pathFor(id)} rotate="auto" />
+              </circle>
+            );
+          })}
+
+          {/* critical pulse rings, drawn under pins */}
+          {victims.map((v) => {
+            const p = MAP_POS[v.id];
+            if (!p || severity(v.priority) !== "critical") return null;
+            return (
+              <circle key={v.id + "-ring"} cx={p.x} cy={p.y} r="10" fill="none" stroke={palette.critical} strokeOpacity="0.5">
+                <animate attributeName="r" values="6;15;6" dur="1.4s" repeatCount="indefinite" />
+                <animate attributeName="stroke-opacity" values="0.5;0;0.5" dur="1.4s" repeatCount="indefinite" />
+              </circle>
+            );
+          })}
+          <circle cx={MAP_POS.BASE.x} cy={MAP_POS.BASE.y} r="14" fill="none" stroke={palette.accent} strokeOpacity="0.35">
+            <animate attributeName="r" values="10;24;10" dur="3s" repeatCount="indefinite" />
+            <animate attributeName="stroke-opacity" values="0.5;0;0.5" dur="3s" repeatCount="indefinite" />
+          </circle>
+
+          {/* base pin */}
+          <g style={{ cursor: onOpenTeam ? "pointer" : "default" }} onClick={() => onOpenTeam && onOpenTeam(teamIds[0])}>
+            <LocPin x={MAP_POS.BASE.x} y={MAP_POS.BASE.y} color={palette.accent} scale={1} label="BASE" />
+          </g>
+
+          {/* hospital pins */}
+          {hospitals.map((h) => {
+            const p = MAP_POS[h.id];
+            if (!p) return null;
+            return <LocPin key={h.id} x={p.x} y={p.y} color={palette.accent} scale={0.85} label={h.id} />;
+          })}
+
+          {/* victim pins */}
+          {victims.map((v) => {
+            const p = MAP_POS[v.id];
+            if (!p) return null;
+            const sev = severity(v.priority);
+            const color = sevColor(sev);
+            const dim = selected && v.team !== selected;
+            return (
+              <g
+                key={v.id}
+                style={{ cursor: onOpenVictim ? "pointer" : "default", opacity: dim ? 0.25 : 1, transition: "opacity 0.25s" }}
+                onClick={() => onOpenVictim && onOpenVictim(v.id)}
+              >
+                <LocPin x={p.x} y={p.y} color={color} scale={0.72} label={v.id} />
+              </g>
+            );
+          })}
+        </svg>
+      </Panel>
+
+      {!compact && (
+        <div style={{ display: "flex", gap: 20, marginTop: 12, fontFamily: F.mono, fontSize: 11.5, color: palette.textMute, flexWrap: "wrap" }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: palette.critical, display: "inline-block" }} /> Critical victim
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: palette.warning, display: "inline-block" }} /> Urgent victim
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: "50%", background: palette.stable, display: "inline-block" }} /> Stable victim
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ width: 8, height: 8, borderRadius: 3, background: palette.accentDim, border: `1px solid ${palette.accent}`, display: "inline-block" }} /> Hospital / base
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* --------------------------- team detail ------------------------ */
 
 function TeamDetail({ team, onBack, onSimulate }) {
@@ -762,6 +1032,11 @@ function TeamDetail({ team, onBack, onSimulate }) {
             />
           </div>
         </Panel>
+      </div>
+
+      <div style={{ marginTop: 12 }}>
+        <Eyebrow style={{ marginBottom: 10 }}>Live map</Eyebrow>
+        <LiveMap victims={initialVictims} focusTeam={team.id} compact />
       </div>
     </div>
   );
@@ -1094,6 +1369,18 @@ export default function AtlasCommandCenter() {
     setOpenTeam(null);
   }
 
+  function jumpToVictim(id) {
+    setView("victims");
+    setOpenVictim(id);
+    setOpenTeam(null);
+  }
+
+  function jumpToTeam(id) {
+    setView("teams");
+    setOpenTeam(id);
+    setOpenVictim(null);
+  }
+
   let content;
   if (view === "overview") {
     content = openVictim ? (
@@ -1101,6 +1388,8 @@ export default function AtlasCommandCenter() {
     ) : (
       <Overview victims={victims} onOpenVictim={setOpenVictim} elapsed={elapsed} />
     );
+  } else if (view === "map") {
+    content = <LiveMap victims={victims} onOpenVictim={jumpToVictim} onOpenTeam={jumpToTeam} />;
   } else if (view === "victims") {
     content = openVictim ? (
       <VictimDetail victim={victims.find((v) => v.id === openVictim)} onBack={() => setOpenVictim(null)} elapsed={elapsed} />
