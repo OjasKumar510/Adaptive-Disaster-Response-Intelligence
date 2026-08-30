@@ -3,8 +3,6 @@ from ortools.constraint_solver import pywrapcp, routing_enums_pb2
 
 def solve_vrp_custom_score(
     adj_matrix, 
-    R1, 
-    R2, 
     V_avg, 
     traffic_score, 
     start_node, 
@@ -17,7 +15,6 @@ def solve_vrp_custom_score(
     
     Parameters:
         adj_matrix (list or np.ndarray): Distance matrix (use float('inf') for missing edges).
-        R1, R2 (float): Reliability/route parameters.
         V_avg (float): Average velocity (units/time).
         traffic_score (float): Multiplier factor for edge distances.
         start_node (int): Index of starting depot node.
@@ -28,19 +25,18 @@ def solve_vrp_custom_score(
     adj_matrix = np.array(adj_matrix, dtype=float)
     num_nodes = len(adj_matrix)
     
-    # Replace infinity with a large integer for routing feasibility
+    # Large integer to represent infinite/unreachable edges in OR-Tools
     INF_VAL = 10**9
     
     # 1. Calculate T_max for each node based on original unadjusted d0(i)
-    # d0(i) is distance from start_node to node i
+    # T_max(i) = d0(i) / V_avg
     t_max = {}
-    time_factor = (1.0 + (2.0 / (R1 + R2))) / V_avg
     for i in range(num_nodes):
         d0_i = adj_matrix[start_node][i]
         if d0_i == float('inf'):
             t_max[i] = INF_VAL
         else:
-            t_max[i] = int(round(d0_i * time_factor))
+            t_max[i] = int(round(d0_i / V_avg))
 
     # 2. Adjust distance matrix based on traffic score
     # d(i) = d(i) * (1 + traffic_score)
@@ -66,12 +62,11 @@ def solve_vrp_custom_score(
 
     transit_callback_index = routing.RegisterTransitCallback(distance_callback)
     
-    # Base arc costs: Sum of adjusted d(i)
+    # Base arc costs: Sum of traffic-adjusted edge weights sum(d(i))
     routing.SetArcCostEvaluatorOfAllVehicles(transit_callback_index)
 
     # 5. Add Time Dimension (Time = Distance / V_avg)
     def time_callback(from_index, to_index):
-        # Time required to travel between nodes
         dist = distance_callback(from_index, to_index)
         return int(round(dist / V_avg))
 
@@ -80,9 +75,9 @@ def solve_vrp_custom_score(
     horizon = INF_VAL
     routing.AddDimension(
         time_callback_index,
-        horizon,  # Allow waiting time
-        horizon,  # Maximum travel capacity horizon
-        False,    # Don't force start to zero
+        horizon,  # Max waiting time capacity
+        horizon,  # Maximum travel horizon
+        False,    # Don't force start time to zero
         "Time"
     )
     time_dimension = routing.GetDimensionOrDie("Time")
@@ -95,13 +90,13 @@ def solve_vrp_custom_score(
         target_time = t_max[node]
         
         if target_time < INF_VAL:
-            # Penalty for arriving AFTER T_max (Gamma * (T_arrival - T_max))
+            # Penalty for late arrivals: Gamma * (T_arrival - T_max)
             time_dimension.SetCumulVarSoftUpperBound(index, target_time, int(round(gamma)))
             
-            # Penalty for arriving BEFORE T_max (Beta * (T_max - T_arrival))
+            # Penalty for early arrivals: Beta * (T_max - T_arrival)
             time_dimension.SetCumulVarSoftLowerBound(index, target_time, int(round(beta)))
 
-    # 7. Configure Search Parameters
+    # 7. Configure Optimization Parameters
     search_parameters = pywrapcp.DefaultRoutingSearchParameters()
     search_parameters.first_solution_strategy = (
         routing_enums_pb2.FirstSolutionStrategy.PATH_CHEAPEST_ARC
@@ -131,9 +126,13 @@ def solve_vrp_custom_score(
                 })
                 index = solution.Value(routing.NextVar(index))
             
-            # Add depot return node
+            # Add final depot return step
             node = manager.IndexToNode(index)
-            route.append({"node": node, "t_arrival": solution.Min(time_dimension.CumulVar(index)), "t_max": t_max[node]})
+            route.append({
+                "node": node, 
+                "t_arrival": solution.Min(time_dimension.CumulVar(index)), 
+                "t_max": t_max[node]
+            })
             results["routes"].append(route)
         return results
     else:
